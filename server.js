@@ -9,96 +9,120 @@ app.use(cors());
 app.use(express.json());
 
 const rooms = {};
+const clients = new Map();
 
-app.get("/", (req,res)=>{
+app.get("/", (req, res) => {
   res.json({
-    status:"Durak Server Online"
+    status: "Durak Server Online"
   });
 });
 
 
-// получить список комнат
-app.get("/api/online/public",(req,res)=>{
+// список комнат
+app.get("/api/online/public", (req,res)=>{
   res.json({
     rooms:Object.values(rooms)
+      .filter(r=>r.players.length < 2)
   });
-});
-
-
-// быстро найти игру
-app.post("/api/online/quick",(req,res)=>{
-
-  let room = Object.values(rooms).find(
-    r=>r.players.length < 2
-  );
-
-
-  if(!room){
-
-    const id = crypto.randomUUID();
-
-    room={
-      id,
-      players:[]
-    };
-
-    rooms[id]=room;
-  }
-
-
-  room.players.push({
-    id: crypto.randomUUID()
-  });
-
-
-  res.json({
-    roomId:room.id,
-    players:room.players.length
-  });
-
 });
 
 
 // создать комнату
 app.post("/api/online/create",(req,res)=>{
 
- const id=crypto.randomUUID();
+  const id = crypto.randomUUID().slice(0,6);
 
- rooms[id]={
-   id,
-   players:[]
- };
+  rooms[id]={
+    id,
+    players:[
+      {
+        id:crypto.randomUUID(),
+        name:req.body.name || "Player"
+      }
+    ],
+    status:"waiting"
+  };
 
 
- res.json({
-   roomId:id
- });
+  res.json({
+    roomId:id
+  });
 
 });
 
 
-// войти в комнату
+// быстрый поиск
+app.post("/api/online/quick",(req,res)=>{
+
+  let room =
+    Object.values(rooms)
+    .find(r=>r.players.length===1);
+
+
+  if(!room){
+
+    const id = crypto.randomUUID().slice(0,6);
+
+    rooms[id]={
+      id,
+      players:[
+        {
+          id:crypto.randomUUID(),
+          name:req.body.name || "Player"
+        }
+      ],
+      status:"waiting"
+    };
+
+
+    return res.json({
+      roomId:id,
+      status:"created"
+    });
+
+  }
+
+
+  room.players.push({
+    id:crypto.randomUUID(),
+    name:req.body.name || "Player"
+  });
+
+
+  room.status="playing";
+
+
+  res.json({
+    roomId:room.id,
+    status:"joined"
+  });
+
+});
+
+
+
+// вход по ID
 app.post("/api/online/join",(req,res)=>{
 
- const {roomId}=req.body;
+ const room=rooms[req.body.roomId];
 
 
- if(!rooms[roomId]){
-   return res.status(404).json({
-    error:"Room not found"
-   });
- }
+ if(!room)
+ return res.status(404).json({
+  error:"Room not found"
+ });
 
 
- rooms[roomId].players.push({
-   id:crypto.randomUUID()
+ room.players.push({
+  id:crypto.randomUUID(),
+  name:req.body.name || "Player"
  });
 
 
  res.json({
-   roomId,
-   players:rooms[roomId].players.length
+  roomId:room.id
  });
+
 
 });
 
@@ -111,19 +135,36 @@ const server = app.listen(
  });
 
 
-const wss=new WebSocketServer({
+const wss = new WebSocketServer({
  server
 });
 
 
-wss.on("connection",socket=>{
+wss.on("connection",(socket)=>{
 
- console.log("player connected");
+ console.log("WS connected");
 
 
  socket.send(JSON.stringify({
   type:"connected"
  }));
+
+
+ socket.on("message",(msg)=>{
+
+   let data;
+
+   try{
+    data=JSON.parse(msg);
+   }catch{
+    return;
+   }
+
+
+   console.log(data);
+
+
+ });
 
 
 });
