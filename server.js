@@ -4,7 +4,7 @@ import { WebSocketServer } from "ws";
 import crypto from "crypto";
 
 const app = express();
-
+console.log("SERVER 7490 LOADED");
 app.use(cors());
 app.use(express.json());
 
