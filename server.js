@@ -31,17 +31,17 @@ app.get("/", (req,res)=>{
 
 
 // PUBLIC ROOMS
+// PUBLIC ROOMS
 app.get("/api/online/public",(req,res)=>{
 
-  res.json({
-    rooms:Object.values(rooms)
+  res.json(
+    Object.values(rooms)
       .filter(
         r=>r.players.length < 2
       )
-  });
+  );
 
 });
-
 
 
 
