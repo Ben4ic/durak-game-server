@@ -3,7 +3,6 @@ import cors from "cors";
 import { WebSocketServer } from "ws";
 import crypto from "crypto";
 
-
 const app = express();
 
 app.use(cors({
@@ -11,123 +10,109 @@ app.use(cors({
 }));
 
 app.use(express.json());
-// AUTH MOCK
-app.get("/api/auth/me",(req,res)=>{
-
-  res.json({
-
-    id:"guest",
-
-    username:"Player",
-
-    guest:true
-
-  });
-
-});
 
 
 console.log("SERVER ONLINE");
 
 
-// Временное хранилище комнат
 const rooms = {};
 
 
+// ================= AUTH =================
 
-// =====================
-// HEALTH
-// =====================
+app.get("/api/auth/me",(req,res)=>{
 
-app.get("/", (req,res)=>{
-
-  res.json({
-    status:"Durak Server Online"
-  });
+ res.json({
+  id:"guest",
+  username:"Player",
+  guest:true
+ });
 
 });
 
 
 
+// ================= HEALTH =================
 
-// =====================
-// PUBLIC ROOMS
-// =====================
+app.get("/",(req,res)=>{
+
+ res.json({
+  status:"Durak Server Online"
+ });
+
+});
+
+
+
+// ================= PUBLIC =================
 
 app.get("/api/online/public",(req,res)=>{
 
-  res.json(
-    Object.values(rooms)
-    .filter(room =>
-      room.status === "waiting"
-    )
-  );
+ res.json(
+  Object.values(rooms)
+  .filter(r=>r.status==="waiting")
+ );
 
 });
 
 
 
 
-// =====================
-// CREATE ROOM
-// =====================
+// ================= CREATE =================
 
 app.post("/api/online/create",(req,res)=>{
 
 
-  const code =
-    crypto.randomUUID()
-    .slice(0,6)
-    .toUpperCase();
+ const code =
+ crypto.randomUUID()
+ .slice(0,6)
+ .toUpperCase();
 
 
 
-  const playerToken =
-    crypto.randomUUID();
+ const player = {
+
+  id:crypto.randomUUID(),
+
+  username:
+  req.body.username || "Player"
+
+ };
+
+
+ const token =
+ crypto.randomUUID();
 
 
 
-  const player = {
+ const room = {
 
-    id:
-      crypto.randomUUID(),
+  code,
 
-    username:
-      req.body.username || "Player"
+  status:"waiting",
 
-  };
+  players:[
+   player
+  ],
+
+  tokens:{
+   [token]:player.id
+  }
+
+ };
 
 
-
-  const room = {
-
-    code,
-
-    status:"waiting",
-
-    players:[
-      player
-    ],
-
-    tokens:{
-      [playerToken]: player.id
-    }
-
-  };
+ rooms[code]=room;
 
 
 
-  rooms[code] = room;
+ res.json({
 
+  room,
 
+  playerToken:token
 
-  res.json({
-
-    room,
-
-    playerToken
-
-  });
+ });
 
 
 });
@@ -137,74 +122,84 @@ app.post("/api/online/create",(req,res)=>{
 
 
 
-// =====================
-// JOIN ROOM
-// =====================
+// ================= JOIN =================
 
 app.post("/api/online/join",(req,res)=>{
 
 
-  const code =
-    req.body.code ||
-    req.body.room;
+ const code =
+ req.body.code ||
+ req.body.room;
 
 
 
-  const room =
-    rooms[code];
+ const room =
+ rooms[code];
 
 
 
-  if(!room){
+ if(!room){
 
-    return res.status(404)
-    .json({
+  return res.status(404).json({
 
-      error:"ROOM_NOT_FOUND"
-
-    });
-
-  }
-
-
-
-  const playerToken =
-    crypto.randomUUID();
-
-
-
-  room.players.push({
-
-    id:
-      crypto.randomUUID(),
-
-    username:
-      req.body.username || "Player"
+   error:"ROOM_NOT_FOUND"
 
   });
 
-
-
-  room.tokens[playerToken] =
-    room.players[1].id;
+ }
 
 
 
-  if(room.players.length >= 2){
+ if(room.players.length>=2){
 
-    room.status="playing";
+  return res.status(400).json({
 
-  }
-
-
-
-  res.json({
-
-    room,
-
-    playerToken
+   error:"ROOM_FULL"
 
   });
+
+ }
+
+
+
+ const player = {
+
+  id:crypto.randomUUID(),
+
+  username:
+  req.body.username || "Player"
+
+ };
+
+
+
+ const token =
+ crypto.randomUUID();
+
+
+
+ room.players.push(player);
+
+
+ room.tokens[token]=player.id;
+
+
+
+ if(room.players.length===2){
+
+  room.status="playing";
+
+ }
+
+
+
+ res.json({
+
+  room,
+
+  playerToken:token
+
+ });
 
 
 });
@@ -215,61 +210,60 @@ app.post("/api/online/join",(req,res)=>{
 
 
 
-// =====================
-// QUICK JOIN
-// =====================
+// ================= QUICK =================
 
 app.post("/api/online/quick",(req,res)=>{
 
 
-  let room =
-    Object.values(rooms)
-    .find(r =>
-      r.players.length === 1
-    );
+ let room =
+ Object.values(rooms)
+ .find(r=>r.players.length===1);
 
 
 
-  if(!room){
+ if(!room){
 
-    return createRoom(req,res);
+  return createRoom(req,res);
 
-  }
-
-
-
-  const playerToken =
-    crypto.randomUUID();
+ }
 
 
 
-  room.players.push({
+ const player={
 
-    id:
-      crypto.randomUUID(),
+  id:crypto.randomUUID(),
 
-    username:
-      req.body.username || "Player"
+  username:
+  req.body.username || "Player"
 
-  });
-
+ };
 
 
-  room.status="playing";
+ const token =
+ crypto.randomUUID();
 
 
 
-  res.json({
+ room.players.push(player);
 
-    room,
 
-    playerToken
+ room.tokens[token]=player.id;
 
-  });
+
+ room.status="playing";
+
+
+
+ res.json({
+
+  room,
+
+  playerToken:token
+
+ });
 
 
 });
-
 
 
 
@@ -279,39 +273,42 @@ function createRoom(req,res){
 
 
  const code =
-    crypto.randomUUID()
-    .slice(0,6)
-    .toUpperCase();
+ crypto.randomUUID()
+ .slice(0,6)
+ .toUpperCase();
 
 
 
- const playerToken =
-    crypto.randomUUID();
+ const player={
 
+  id:crypto.randomUUID(),
 
-
- const room = {
-
-    code,
-
-    status:"waiting",
-
-    players:[{
-
-      id:
-      crypto.randomUUID(),
-
-      username:
-      req.body.username || "Player"
-
-    }],
-
-    tokens:{
-      [playerToken]:true
-    }
+  username:
+  req.body.username || "Player"
 
  };
 
+
+ const token =
+ crypto.randomUUID();
+
+
+
+ const room={
+
+  code,
+
+  status:"waiting",
+
+  players:[
+   player
+  ],
+
+  tokens:{
+   [token]:player.id
+  }
+
+ };
 
 
  rooms[code]=room;
@@ -320,11 +317,12 @@ function createRoom(req,res){
 
  res.json({
 
-    room,
+  room,
 
-    playerToken
+  playerToken:token
 
  });
+
 
 }
 
@@ -334,32 +332,59 @@ function createRoom(req,res){
 
 
 
-// =====================
-// GET ROOM
-// =====================
+
+// ================= ROOM =================
+
+
+// вариант /room?code=ABC123
 
 app.get("/api/online/room",(req,res)=>{
 
 
  const code =
-    req.query.code ||
-    req.query.room;
+ req.query.code ||
+ req.query.room;
 
+
+
+ return sendRoom(code,res);
+
+
+});
+
+
+
+// вариант /room/ABC123
+
+app.get("/api/online/room/:id",(req,res)=>{
+
+
+ return sendRoom(
+  req.params.id,
+  res
+ );
+
+
+});
+
+
+
+
+function sendRoom(code,res){
 
 
  const room =
-    rooms[code];
+ rooms[code];
 
 
 
  if(!room){
 
-    return res.status(404)
-    .json({
+  return res.status(404).json({
 
-      error:"ROOM_NOT_FOUND"
+   error:"ROOM_NOT_FOUND"
 
-    });
+  });
 
  }
 
@@ -368,7 +393,7 @@ app.get("/api/online/room",(req,res)=>{
  res.json(room);
 
 
-});
+}
 
 
 
@@ -377,17 +402,14 @@ app.get("/api/online/room",(req,res)=>{
 
 
 
-// =====================
-// LEAVE
-// =====================
+// ================= LEAVE =================
 
 app.post("/api/online/leave",(req,res)=>{
 
 
  const code =
-    req.body.code ||
-    req.body.room;
-
+ req.body.code ||
+ req.body.room;
 
 
  delete rooms[code];
@@ -395,7 +417,7 @@ app.post("/api/online/leave",(req,res)=>{
 
  res.json({
 
-   ok:true
+  ok:true
 
  });
 
@@ -409,16 +431,14 @@ app.post("/api/online/leave",(req,res)=>{
 
 
 
-// =====================
-// ACTION
-// =====================
+// ================= ACTION =================
 
 app.post("/api/online/action",(req,res)=>{
 
 
  res.json({
 
-   ok:true
+  ok:true
 
  });
 
@@ -431,9 +451,7 @@ app.post("/api/online/action",(req,res)=>{
 
 
 
-// =====================
-// SERVER
-// =====================
+// ================= SERVER =================
 
 const server =
 app.listen(
@@ -455,10 +473,8 @@ app.listen(
 
 
 
+// ================= WS =================
 
-// =====================
-// WEBSOCKET
-// =====================
 
 const wss =
 new WebSocketServer({
@@ -479,7 +495,7 @@ socket=>{
  socket.send(
  JSON.stringify({
 
- type:"connected"
+  type:"connected"
 
  })
  );
