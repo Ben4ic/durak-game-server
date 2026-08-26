@@ -1,16 +1,27 @@
 import express from "express";
 import cors from "cors";
-import { WebSocketServer } from "ws";
-import crypto from "crypto";
+
+import {
+  createSimpleRoom,
+  joinSimpleRoom,
+  quickSimpleRoom,
+  getSimpleRoom,
+  simpleAction,
+  leaveSimpleRoom,
+  listSimpleRooms
+} from "./simpleOnline.js";
+
 
 const app = express();
+
 console.log("SERVER 7490 LOADED");
+
+
 app.use(cors());
 app.use(express.json());
 
-const rooms = {};
-const clients = new Map();
 
+// health check
 app.get("/", (req, res) => {
   res.json({
     status: "Durak Server Online"
@@ -18,153 +29,189 @@ app.get("/", (req, res) => {
 });
 
 
-// список комнат
-app.get("/api/online/public", (req,res)=>{
-  res.json({
-    rooms:Object.values(rooms)
-      .filter(r=>r.players.length < 2)
-  });
+// список публичных комнат
+app.get("/api/online/public", async (req, res) => {
+  try {
+    const rooms = await listSimpleRooms();
+
+    res.json({
+      rooms
+    });
+
+  } catch (e) {
+
+    res.status(500).json({
+      error: e.message
+    });
+
+  }
 });
 
 
 // создать комнату
-app.post("/api/online/create",(req,res)=>{
+app.post("/api/online/create", async (req, res) => {
 
-  const id = crypto.randomUUID().slice(0,6);
+  try {
 
-  rooms[id]={
-    id,
-    players:[
-      {
-        id:crypto.randomUUID(),
-        name:req.body.name || "Player"
-      }
-    ],
-    status:"waiting"
-  };
+    const result = await createSimpleRoom(
+      req.body.name
+    );
 
+    res.json(result);
 
-  res.json({
-    roomId:id
-  });
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
 
 });
 
 
 // быстрый поиск
-app.post("/api/online/quick",(req,res)=>{
+app.post("/api/online/quick", async (req,res)=>{
 
-  let room =
-    Object.values(rooms)
-    .find(r=>r.players.length===1);
+  try {
 
+    const result = await quickSimpleRoom(
+      req.body.name
+    );
 
-  if(!room){
+    res.json(result);
 
-    const id = crypto.randomUUID().slice(0,6);
+  } catch(e){
 
-    rooms[id]={
-      id,
-      players:[
-        {
-          id:crypto.randomUUID(),
-          name:req.body.name || "Player"
-        }
-      ],
-      status:"waiting"
-    };
-
-
-    return res.json({
-      roomId:id,
-      status:"created"
+    res.status(500).json({
+      error:e.message
     });
 
   }
 
-
-  room.players.push({
-    id:crypto.randomUUID(),
-    name:req.body.name || "Player"
-  });
+});
 
 
-  room.status="playing";
+// вход по коду комнаты
+app.post("/api/online/join", async(req,res)=>{
+
+  try {
+
+    const result = await joinSimpleRoom(
+      req.body.roomId,
+      req.body.name
+    );
+
+    res.json(result);
 
 
-  res.json({
-    roomId:room.id,
-    status:"joined"
-  });
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
 
 });
 
 
+// получить состояние игры
+app.get("/api/online/room", async(req,res)=>{
 
-// вход по ID
-app.post("/api/online/join",(req,res)=>{
+  try {
 
- const room=rooms[req.body.roomId];
-
-
- if(!room)
- return res.status(404).json({
-  error:"Room not found"
- });
+    const roomId = req.query.roomId;
+    const token = req.headers.get
+      ? req.headers.get("x-player-token")
+      : req.headers["x-player-token"];
 
 
- room.players.push({
-  id:crypto.randomUUID(),
-  name:req.body.name || "Player"
- });
+    const result = await getSimpleRoom(
+      roomId,
+      token
+    );
 
 
- res.json({
-  roomId:room.id
- });
+    res.json(result);
 
+
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
 
 });
 
 
+// действие игрока
+app.post("/api/online/action", async(req,res)=>{
 
-const server = app.listen(
- process.env.PORT || 3000,
- ()=>{
- console.log("Durak server started");
- });
+  try {
+
+    const token =
+      req.headers["x-player-token"];
 
 
-const wss = new WebSocketServer({
- server
+    const result = await simpleAction(
+      req.body.roomId,
+      token,
+      req.body.action,
+      req.body.cardId,
+      req.body.revision
+    );
+
+
+    res.json(result);
+
+
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
+
 });
 
 
-wss.on("connection",(socket)=>{
+// выход
+app.post("/api/online/leave", async(req,res)=>{
 
- console.log("WS connected");
+  try {
 
+    const result = await leaveSimpleRoom(
+      req.body.roomId,
+      req.headers["x-player-token"]
+    );
 
- socket.send(JSON.stringify({
-  type:"connected"
- }));
-
-
- socket.on("message",(msg)=>{
-
-   let data;
-
-   try{
-    data=JSON.parse(msg);
-   }catch{
-    return;
-   }
+    res.json(result);
 
 
-   console.log(data);
+  } catch(e){
+
+    res.status(500).json({
+      error:e.message
+    });
+
+  }
+
+});
 
 
- });
+// запуск
+const PORT = process.env.PORT || 3000;
 
+
+app.listen(PORT,()=>{
+
+ console.log(
+  "Durak server started on port",
+  PORT
+ );
 
 });
