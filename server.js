@@ -3,9 +3,11 @@ import cors from "cors";
 import { WebSocketServer } from "ws";
 import crypto from "crypto";
 
+
 const app = express();
 
-console.log("SERVER ONLINE");
+console.log("SERVER 7490 LOADED");
+
 
 app.use(cors({
   origin: "*"
@@ -18,23 +20,53 @@ const rooms = {};
 
 
 
-// HEALTH CHECK
+
+// =====================
+// HEALTH
+// =====================
+
 app.get("/", (req,res)=>{
+
   res.json({
     status:"Durak Server Online"
   });
+
 });
 
 
 
 
+
+// =====================
 // PUBLIC ROOMS
+// =====================
+
 app.get("/api/online/public",(req,res)=>{
 
-  res.json(
+
+  const result =
     Object.values(rooms)
-    .filter(r=>r.players.length < 2)
-  );
+    .filter(
+      room =>
+      room.status === "waiting"
+    )
+    .map(room=>({
+
+      code: room.code,
+
+      host:
+        room.players[0]?.username || "Player",
+
+      players:
+        room.players.length,
+
+      capacity:2
+
+    }));
+
+
+  res.json(result);
+
 
 });
 
@@ -42,46 +74,70 @@ app.get("/api/online/public",(req,res)=>{
 
 
 
+
+
+// =====================
 // CREATE ROOM
+// =====================
+
 app.post("/api/online/create",(req,res)=>{
 
 
-  const roomId =
+  const code =
     crypto.randomUUID()
     .slice(0,6)
     .toUpperCase();
+
 
 
   const playerId =
     crypto.randomUUID();
 
 
-
-  const playerToken =
+  const token =
     crypto.randomUUID();
 
 
 
   const room = {
 
-    id: roomId,
+
+    code,
+
+
+    status:"waiting",
+
 
     players:[
+
       {
+
         id:playerId,
-        token:playerToken,
-        name:req.body.name || "Player"
+
+        username:
+          req.body.username || "Player"
+
       }
+
     ],
 
 
-    status:"waiting"
+    tokens:{
+
+      [token]:playerId
+
+    },
+
+
+    createdAt:
+      new Date().toISOString()
+
 
   };
 
 
 
-  rooms[roomId]=room;
+  rooms[code]=room;
 
 
 
@@ -89,7 +145,7 @@ app.post("/api/online/create",(req,res)=>{
 
     room,
 
-    playerToken
+    playerToken:token
 
   });
 
@@ -103,25 +159,46 @@ app.post("/api/online/create",(req,res)=>{
 
 
 
-// QUICK JOIN
+
+// =====================
+// QUICK MATCH
+// =====================
+
 app.post("/api/online/quick",(req,res)=>{
 
 
   let room =
     Object.values(rooms)
-    .find(r=>r.players.length===1);
+    .find(
+      r =>
+      r.status==="waiting"
+      &&
+      r.players.length===1
+    );
 
 
 
-  const playerToken =
+  const token =
     crypto.randomUUID();
+
+
+
+  const player = {
+
+    id:
+      crypto.randomUUID(),
+
+    username:
+      req.body.username || "Player"
+
+  };
 
 
 
   if(!room){
 
 
-    const roomId =
+    const code =
       crypto.randomUUID()
       .slice(0,6)
       .toUpperCase();
@@ -130,37 +207,36 @@ app.post("/api/online/quick",(req,res)=>{
 
     room={
 
-      id:roomId,
+      code,
 
-      players:[],
+      status:"waiting",
 
-      status:"waiting"
+      players:[
+        player
+      ],
+
+      tokens:{
+        [token]:player.id
+      }
 
     };
 
 
-    rooms[roomId]=room;
+    rooms[code]=room;
 
 
   }
+  else{
 
 
-
-  room.players.push({
-
-    id:crypto.randomUUID(),
-
-    token:playerToken,
-
-    name:req.body.name || "Player"
-
-  });
+    room.players.push(player);
 
 
+    room.tokens[token]=player.id;
 
-  if(room.players.length===2){
 
-    room.status="playing";
+    room.status="active";
+
 
   }
 
@@ -170,7 +246,7 @@ app.post("/api/online/quick",(req,res)=>{
 
     room,
 
-    playerToken
+    playerToken:token
 
   });
 
@@ -184,58 +260,78 @@ app.post("/api/online/quick",(req,res)=>{
 
 
 
-// JOIN BY CODE
+
+
+// =====================
+// JOIN ROOM
+// =====================
+
 app.post("/api/online/join",(req,res)=>{
 
 
- const room =
- rooms[req.body.roomId];
+  const code =
+    req.body.code;
+
+
+  const room =
+    rooms[code];
 
 
 
- if(!room){
+  if(!room){
 
-  return res.status(404)
-  .json({
-    error:"ROOM_NOT_FOUND"
+    return res.status(404)
+    .json({
+
+      error:"ROOM_NOT_FOUND"
+
+    });
+
+  }
+
+
+
+  const token =
+    crypto.randomUUID();
+
+
+
+  const player={
+
+
+    id:
+      crypto.randomUUID(),
+
+
+    username:
+      req.body.username || "Player"
+
+
+  };
+
+
+
+  room.players.push(player);
+
+
+  room.tokens[token]=player.id;
+
+
+  if(room.players.length===2){
+
+    room.status="active";
+
+  }
+
+
+
+  res.json({
+
+    room,
+
+    playerToken:token
+
   });
-
- }
-
-
-
- const playerToken =
- crypto.randomUUID();
-
-
-
- room.players.push({
-
-   id:crypto.randomUUID(),
-
-   token:playerToken,
-
-   name:req.body.name || "Player"
-
- });
-
-
-
- if(room.players.length===2){
-
-   room.status="playing";
-
- }
-
-
-
- res.json({
-
-   room,
-
-   playerToken
-
- });
 
 
 });
@@ -247,27 +343,38 @@ app.post("/api/online/join",(req,res)=>{
 
 
 
-// ROOM INFO
-app.get("/api/online/room/:id",(req,res)=>{
+
+// =====================
+// GET ROOM
+// =====================
+
+app.get("/api/online/room",(req,res)=>{
 
 
- const room =
- rooms[req.params.id];
-
-
-
- if(!room){
-
-  return res.status(404)
-  .json({
-    error:"ROOM_NOT_FOUND"
-  });
-
- }
+  const code =
+    req.query.code;
 
 
 
- res.json(room);
+  const room =
+    rooms[code];
+
+
+
+  if(!room){
+
+    return res.status(404)
+    .json({
+
+      error:"ROOM_NOT_FOUND"
+
+    });
+
+  }
+
+
+
+  res.json(room);
 
 
 });
@@ -277,33 +384,99 @@ app.get("/api/online/room/:id",(req,res)=>{
 
 
 
+
+
+
+
+// =====================
+// ACTION
+// =====================
+
+app.post("/api/online/action",(req,res)=>{
+
+
+  res.json({
+
+    ok:true,
+
+    message:"Action received"
+
+  });
+
+
+});
+
+
+
+
+
+
+
+
+// =====================
+// LEAVE
+// =====================
+
+app.post("/api/online/leave",(req,res)=>{
+
+
+  const code =
+    req.body.code;
+
+
+  delete rooms[code];
+
+
+  res.json({
+
+    ok:true
+
+  });
+
+
+});
+
+
+
+
+
+
+
+
+
+// =====================
+// START
+// =====================
 
 
 const server =
 app.listen(
 
- process.env.PORT || 3000,
+  process.env.PORT || 3000,
 
- ()=>{
+  ()=>{
 
- console.log(
- "Durak server started"
- );
+    console.log(
+      "Durak server started"
+    );
 
-});
+  }
 
-
-
-
+);
 
 
 
+
+
+// =====================
 // WEBSOCKET
+// =====================
 
 const wss =
 new WebSocketServer({
- server
+  server
 });
+
 
 
 wss.on(
@@ -312,27 +485,17 @@ socket=>{
 
 
  console.log(
- "WS connected"
+  "WS connected"
  );
 
 
  socket.send(
  JSON.stringify({
- type:"connected"
+
+  type:"connected"
+
  })
  );
-
-
- socket.on(
- "message",
- msg=>{
-
- console.log(
- "WS:",
- msg.toString()
- );
-
- });
 
 
 });
