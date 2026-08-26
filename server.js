@@ -3,15 +3,15 @@ import cors from "cors";
 import { WebSocketServer } from "ws";
 import crypto from "crypto";
 
-
 const app = express();
 
-console.log("SERVER 7490 LOADED");
+console.log("SERVER ONLINE");
 
+app.use(cors({
+  origin: "*"
+}));
 
-app.use(cors());
 app.use(express.json());
-
 
 
 const rooms = {};
@@ -20,66 +20,84 @@ const rooms = {};
 
 // HEALTH CHECK
 app.get("/", (req,res)=>{
-
   res.json({
     status:"Durak Server Online"
   });
-
 });
 
 
 
 
 // PUBLIC ROOMS
-// PUBLIC ROOMS
 app.get("/api/online/public",(req,res)=>{
 
   res.json(
     Object.values(rooms)
-      .filter(
-        r=>r.players.length < 2
-      )
+    .filter(r=>r.players.length < 2)
   );
 
 });
 
 
 
+
+
 // CREATE ROOM
 app.post("/api/online/create",(req,res)=>{
 
-  const id =
+
+  const roomId =
     crypto.randomUUID()
     .slice(0,6)
     .toUpperCase();
 
 
-  rooms[id]={
+  const playerId =
+    crypto.randomUUID();
 
-    id,
+
+
+  const playerToken =
+    crypto.randomUUID();
+
+
+
+  const room = {
+
+    id: roomId,
 
     players:[
       {
-        id:crypto.randomUUID(),
+        id:playerId,
+        token:playerToken,
         name:req.body.name || "Player"
       }
     ],
+
 
     status:"waiting"
 
   };
 
 
+
+  rooms[roomId]=room;
+
+
+
   res.json({
 
-    roomId:id,
+    room,
 
-    status:"created"
+    playerToken
 
   });
 
 
 });
+
+
+
 
 
 
@@ -91,52 +109,40 @@ app.post("/api/online/quick",(req,res)=>{
 
   let room =
     Object.values(rooms)
-    .find(
-      r=>r.players.length===1
-    );
+    .find(r=>r.players.length===1);
+
+
+
+  const playerToken =
+    crypto.randomUUID();
 
 
 
   if(!room){
 
 
-    const id =
+    const roomId =
       crypto.randomUUID()
       .slice(0,6)
       .toUpperCase();
 
 
 
-    rooms[id]={
+    room={
 
-      id,
+      id:roomId,
 
-      players:[
-
-        {
-          id:crypto.randomUUID(),
-          name:req.body.name || "Player"
-        }
-
-      ],
+      players:[],
 
       status:"waiting"
 
     };
 
 
-
-    return res.json({
-
-      roomId:id,
-
-      status:"created"
-
-    });
+    rooms[roomId]=room;
 
 
   }
-
 
 
 
@@ -144,27 +150,34 @@ app.post("/api/online/quick",(req,res)=>{
 
     id:crypto.randomUUID(),
 
+    token:playerToken,
+
     name:req.body.name || "Player"
 
   });
 
 
 
-  room.status="playing";
+  if(room.players.length===2){
+
+    room.status="playing";
+
+  }
 
 
 
   res.json({
 
-    roomId:room.id,
+    room,
 
-    status:"joined"
+    playerToken
 
   });
 
 
-
 });
+
+
 
 
 
@@ -176,7 +189,7 @@ app.post("/api/online/join",(req,res)=>{
 
 
  const room =
-  rooms[req.body.roomId];
+ rooms[req.body.roomId];
 
 
 
@@ -191,9 +204,16 @@ app.post("/api/online/join",(req,res)=>{
 
 
 
+ const playerToken =
+ crypto.randomUUID();
+
+
+
  room.players.push({
 
    id:crypto.randomUUID(),
+
+   token:playerToken,
 
    name:req.body.name || "Player"
 
@@ -201,11 +221,19 @@ app.post("/api/online/join",(req,res)=>{
 
 
 
+ if(room.players.length===2){
+
+   room.status="playing";
+
+ }
+
+
+
  res.json({
 
-   roomId:room.id,
+   room,
 
-   status:"joined"
+   playerToken
 
  });
 
@@ -218,12 +246,13 @@ app.post("/api/online/join",(req,res)=>{
 
 
 
+
 // ROOM INFO
 app.get("/api/online/room/:id",(req,res)=>{
 
 
  const room =
-  rooms[req.params.id];
+ rooms[req.params.id];
 
 
 
@@ -249,7 +278,6 @@ app.get("/api/online/room/:id",(req,res)=>{
 
 
 
-// START SERVER
 
 const server =
 app.listen(
@@ -258,13 +286,13 @@ app.listen(
 
  ()=>{
 
-  console.log(
-   "Durak server started"
-  );
+ console.log(
+ "Durak server started"
+ );
 
- }
+});
 
-);
+
 
 
 
@@ -278,36 +306,33 @@ new WebSocketServer({
 });
 
 
-
 wss.on(
- "connection",
- socket=>{
+"connection",
+socket=>{
 
 
  console.log(
-  "WS connected"
+ "WS connected"
  );
 
 
  socket.send(
-  JSON.stringify({
-   type:"connected"
-  })
+ JSON.stringify({
+ type:"connected"
+ })
  );
 
 
  socket.on(
-  "message",
-  msg=>{
+ "message",
+ msg=>{
 
-    console.log(
-      "WS MESSAGE:",
-      msg.toString()
-    );
-
-
-  }
+ console.log(
+ "WS:",
+ msg.toString()
  );
+
+ });
 
 
 });
