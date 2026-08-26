@@ -1,15 +1,7 @@
 import express from "express";
 import cors from "cors";
-
-import {
-  createSimpleRoom,
-  joinSimpleRoom,
-  quickSimpleRoom,
-  getSimpleRoom,
-  simpleAction,
-  leaveSimpleRoom,
-  listSimpleRooms
-} from "./simpleOnline.js";
+import { WebSocketServer } from "ws";
+import crypto from "crypto";
 
 
 const app = express();
@@ -21,197 +13,301 @@ app.use(cors());
 app.use(express.json());
 
 
-// health check
-app.get("/", (req, res) => {
+
+const rooms = {};
+
+
+
+// HEALTH CHECK
+app.get("/", (req,res)=>{
+
   res.json({
-    status: "Durak Server Online"
+    status:"Durak Server Online"
   });
-});
-
-
-// список публичных комнат
-app.get("/api/online/public", async (req, res) => {
-  try {
-    const rooms = await listSimpleRooms();
-
-    res.json({
-      rooms
-    });
-
-  } catch (e) {
-
-    res.status(500).json({
-      error: e.message
-    });
-
-  }
-});
-
-
-// создать комнату
-app.post("/api/online/create", async (req, res) => {
-
-  try {
-
-    const result = await createSimpleRoom(
-      req.body.name
-    );
-
-    res.json(result);
-
-  } catch(e){
-
-    res.status(500).json({
-      error:e.message
-    });
-
-  }
 
 });
 
 
-// быстрый поиск
-app.post("/api/online/quick", async (req,res)=>{
 
-  try {
 
-    const result = await quickSimpleRoom(
-      req.body.name
-    );
+// PUBLIC ROOMS
+app.get("/api/online/public",(req,res)=>{
 
-    res.json(result);
-
-  } catch(e){
-
-    res.status(500).json({
-      error:e.message
-    });
-
-  }
+  res.json({
+    rooms:Object.values(rooms)
+      .filter(
+        r=>r.players.length < 2
+      )
+  });
 
 });
 
 
-// вход по коду комнаты
-app.post("/api/online/join", async(req,res)=>{
-
-  try {
-
-    const result = await joinSimpleRoom(
-      req.body.roomId,
-      req.body.name
-    );
-
-    res.json(result);
 
 
-  } catch(e){
+// CREATE ROOM
+app.post("/api/online/create",(req,res)=>{
 
-    res.status(500).json({
-      error:e.message
-    });
+  const id =
+    crypto.randomUUID()
+    .slice(0,6)
+    .toUpperCase();
 
-  }
+
+  rooms[id]={
+
+    id,
+
+    players:[
+      {
+        id:crypto.randomUUID(),
+        name:req.body.name || "Player"
+      }
+    ],
+
+    status:"waiting"
+
+  };
+
+
+  res.json({
+
+    roomId:id,
+
+    status:"created"
+
+  });
+
 
 });
 
 
-// получить состояние игры
-app.get("/api/online/room", async(req,res)=>{
-
-  try {
-
-    const roomId = req.query.roomId;
-    const token = req.headers.get
-      ? req.headers.get("x-player-token")
-      : req.headers["x-player-token"];
 
 
-    const result = await getSimpleRoom(
-      roomId,
-      token
+
+// QUICK JOIN
+app.post("/api/online/quick",(req,res)=>{
+
+
+  let room =
+    Object.values(rooms)
+    .find(
+      r=>r.players.length===1
     );
 
 
-    res.json(result);
+
+  if(!room){
 
 
-  } catch(e){
+    const id =
+      crypto.randomUUID()
+      .slice(0,6)
+      .toUpperCase();
 
-    res.status(500).json({
-      error:e.message
+
+
+    rooms[id]={
+
+      id,
+
+      players:[
+
+        {
+          id:crypto.randomUUID(),
+          name:req.body.name || "Player"
+        }
+
+      ],
+
+      status:"waiting"
+
+    };
+
+
+
+    return res.json({
+
+      roomId:id,
+
+      status:"created"
+
     });
 
+
   }
+
+
+
+
+  room.players.push({
+
+    id:crypto.randomUUID(),
+
+    name:req.body.name || "Player"
+
+  });
+
+
+
+  room.status="playing";
+
+
+
+  res.json({
+
+    roomId:room.id,
+
+    status:"joined"
+
+  });
+
+
 
 });
 
 
-// действие игрока
-app.post("/api/online/action", async(req,res)=>{
-
-  try {
-
-    const token =
-      req.headers["x-player-token"];
 
 
-    const result = await simpleAction(
-      req.body.roomId,
-      token,
-      req.body.action,
-      req.body.cardId,
-      req.body.revision
-    );
 
 
-    res.json(result);
+// JOIN BY CODE
+app.post("/api/online/join",(req,res)=>{
 
 
-  } catch(e){
+ const room =
+  rooms[req.body.roomId];
 
-    res.status(500).json({
-      error:e.message
-    });
 
-  }
+
+ if(!room){
+
+  return res.status(404)
+  .json({
+    error:"ROOM_NOT_FOUND"
+  });
+
+ }
+
+
+
+ room.players.push({
+
+   id:crypto.randomUUID(),
+
+   name:req.body.name || "Player"
+
+ });
+
+
+
+ res.json({
+
+   roomId:room.id,
+
+   status:"joined"
+
+ });
+
 
 });
 
 
-// выход
-app.post("/api/online/leave", async(req,res)=>{
-
-  try {
-
-    const result = await leaveSimpleRoom(
-      req.body.roomId,
-      req.headers["x-player-token"]
-    );
-
-    res.json(result);
 
 
-  } catch(e){
 
-    res.status(500).json({
-      error:e.message
-    });
 
-  }
+
+// ROOM INFO
+app.get("/api/online/room/:id",(req,res)=>{
+
+
+ const room =
+  rooms[req.params.id];
+
+
+
+ if(!room){
+
+  return res.status(404)
+  .json({
+    error:"ROOM_NOT_FOUND"
+  });
+
+ }
+
+
+
+ res.json(room);
+
 
 });
 
 
-// запуск
-const PORT = process.env.PORT || 3000;
 
 
-app.listen(PORT,()=>{
+
+
+
+// START SERVER
+
+const server =
+app.listen(
+
+ process.env.PORT || 3000,
+
+ ()=>{
+
+  console.log(
+   "Durak server started"
+  );
+
+ }
+
+);
+
+
+
+
+
+// WEBSOCKET
+
+const wss =
+new WebSocketServer({
+ server
+});
+
+
+
+wss.on(
+ "connection",
+ socket=>{
+
 
  console.log(
-  "Durak server started on port",
-  PORT
+  "WS connected"
  );
+
+
+ socket.send(
+  JSON.stringify({
+   type:"connected"
+  })
+ );
+
+
+ socket.on(
+  "message",
+  msg=>{
+
+    console.log(
+      "WS MESSAGE:",
+      msg.toString()
+    );
+
+
+  }
+ );
+
 
 });
