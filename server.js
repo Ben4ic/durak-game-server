@@ -11,6 +11,20 @@ app.use(cors({
 }));
 
 app.use(express.json());
+// AUTH MOCK
+app.get("/api/auth/me",(req,res)=>{
+
+  res.json({
+
+    id:"guest",
+
+    username:"Player",
+
+    guest:true
+
+  });
+
+});
 
 
 console.log("SERVER ONLINE");
