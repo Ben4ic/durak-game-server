@@ -1,25 +1,27 @@
 import crypto from "crypto";
 import { newOnlineGame, startOnlineGame } from "../game/engine.js";
+import { getStore } from "../storage/roomStore.js";
 
-// ===== In-memory room store =====
-// NOTE: this is a single Map living in ONE Node process. That is enough to
-// fix the "phone vs phone" bug (both clients now always hit the same
-// process + same store), as long as the server runs as a single instance
-// with no auto-restart/sleep wiping memory mid-game. Swapping this for
-// Redis later (see storage/redis.js) is a drop-in replacement — every
-// function below is already async so the call sites won't need to change.
-
-const rooms = new Map(); // code -> Room
-const tokenIndex = new Map(); // token -> { code, playerId }
+// ===== Room manager =====
+//
+// Every function here is async and goes through the store abstraction in
+// storage/roomStore.js — never a raw Map, never Redis calls directly. That
+// indirection is what makes "rooms survive a server restart" possible: set
+// REDIS_URL and this exact same code persists rooms in Redis instead of
+// process memory, with zero changes to callers (server.js just awaits
+// these the same way either way).
+//
+// `room.game.players` is the ONLY list of players in a room (no separate
+// `room.players` array) — a second, separately-maintained array was a real
+// bug risk in an earlier version of this file.
 
 const ROOM_CAPACITY = 2;
-const ROOM_TTL_MS = 1000 * 60 * 60; // 1h safety cleanup for abandoned rooms
 
-function genCode() {
+async function genCode(store) {
   let code;
   do {
     code = crypto.randomUUID().slice(0, 6).toUpperCase();
-  } while (rooms.has(code));
+  } while (await store.getRoom(code));
   return code;
 }
 
@@ -27,124 +29,155 @@ function makePlayer(username) {
   return { id: crypto.randomUUID(), username: (username || "Player").slice(0, 24) };
 }
 
-function issueToken(code, playerId) {
+function players(room) {
+  return room.game.players;
+}
+
+async function issueToken(store, code, playerId) {
   const token = crypto.randomUUID();
-  tokenIndex.set(token, { code, playerId });
+  await store.setToken(token, { code, playerId });
   return token;
 }
 
-function touch(room) {
-  room.lastActivity = Date.now();
-  return room;
-}
-
-function sweep() {
-  const now = Date.now();
-  for (const [code, room] of rooms) {
-    if (now - room.lastActivity > ROOM_TTL_MS) {
-      for (const [token, ref] of tokenIndex) {
-        if (ref.code === code) tokenIndex.delete(token);
-      }
-      rooms.delete(code);
-    }
-  }
-}
-setInterval(sweep, 5 * 60 * 1000).unref?.();
-
-export function resolveToken(token) {
-  const ref = token && tokenIndex.get(token);
+export async function resolveToken(token) {
+  if (!token) return null;
+  const store = await getStore();
+  const ref = await store.getToken(token);
   if (!ref) return null;
-  const room = rooms.get(ref.code);
-  if (!room) return null;
+  const room = await store.getRoom(ref.code);
+  if (!room) {
+    // Room is gone (expired / deleted) but the token wasn't cleaned up —
+    // don't hand back a dangling reference.
+    await store.deleteToken(token);
+    return null;
+  }
   return { room, playerId: ref.playerId };
 }
 
 export function roomSummary(room) {
+  const list = players(room);
   return {
     code: room.code,
-    host: room.players[0]?.username || "Player",
-    players: room.players.length,
+    host: list[0]?.username || "Player",
+    players: list.length,
     capacity: ROOM_CAPACITY,
     status: room.game.status,
+    deckSize: room.game.deckSize,
   };
 }
 
-export function listPublicRooms() {
-  return Array.from(rooms.values())
-    .filter((r) => r.game.status === "waiting" && r.players.length < ROOM_CAPACITY)
+export async function listPublicRooms() {
+  const store = await getStore();
+  const codes = await store.listWaitingCodes();
+  const rooms = await Promise.all(codes.map((code) => store.getRoom(code)));
+  return rooms
+    .filter((r) => r && r.game.status === "waiting" && players(r).length < ROOM_CAPACITY)
     .map(roomSummary);
 }
 
-export function createRoom(username) {
-  const code = genCode();
+export async function createRoom(username, options = {}) {
+  const store = await getStore();
+  const code = await genCode(store);
   const player = makePlayer(username);
-  const room = touch({
-    code,
-    players: [player],
-    game: newOnlineGame(code, [player]),
+  const room = { code, game: newOnlineGame(code, [player], options) };
+  await store.saveRoom(room);
+  const token = await issueToken(store, code, player.id);
+  return { room, playerToken: token };
+}
+
+export async function joinRoom(code, username) {
+  const store = await getStore();
+  const player = makePlayer(username);
+  const normalizedCode = (code || "").toUpperCase();
+
+  // Routed through withRoom() so the "is there room for one more player"
+  // check and the write-back happen atomically even when the store is
+  // Redis (see roomStore.js — this is what stops two simultaneous joins
+  // from both becoming "player #2" of the same room).
+  const outcome = await store.withRoom(normalizedCode, async (room) => {
+    if (!room) return { error: "ROOM_NOT_FOUND" };
+    if (players(room).length >= ROOM_CAPACITY) return { error: "ROOM_FULL" };
+    if (room.game.status !== "waiting") return { error: "ROOM_NOT_JOINABLE" };
+
+    room.game.players.push(player);
+    if (players(room).length === ROOM_CAPACITY) {
+      room.game = startOnlineGame(room.game);
+    }
+    return { room };
   });
-  rooms.set(code, room);
-  const token = issueToken(code, player.id);
-  return { room, playerToken: token };
+
+  if (outcome.error) throw new Error(outcome.error);
+
+  const token = await issueToken(store, outcome.room.code, player.id);
+  return { room: outcome.room, playerToken: token };
 }
 
-export function joinRoom(code, username) {
-  const room = rooms.get((code || "").toUpperCase());
-  if (!room) throw new Error("ROOM_NOT_FOUND");
-  if (room.players.length >= ROOM_CAPACITY) throw new Error("ROOM_FULL");
-  if (room.game.status !== "waiting") throw new Error("ROOM_NOT_JOINABLE");
-
-  const player = makePlayer(username);
-  room.players.push(player);
-  room.game.players.push(player);
-
-  if (room.players.length === ROOM_CAPACITY) {
-    room.game = startOnlineGame(room.game);
+export async function quickJoin(username, options = {}) {
+  const store = await getStore();
+  const codes = await store.listWaitingCodes();
+  for (const code of codes) {
+    const room = await store.getRoom(code);
+    if (room && room.game.status === "waiting" && players(room).length < ROOM_CAPACITY) {
+      try {
+        return await joinRoom(code, username);
+      } catch (e) {
+        // Someone else grabbed the last seat between our check and the
+        // join attempt — try the next waiting room instead of failing.
+        if (e.message !== "ROOM_FULL" && e.message !== "ROOM_NOT_JOINABLE") throw e;
+        continue;
+      }
+    }
   }
-  touch(room);
-
-  const token = issueToken(code, player.id);
-  return { room, playerToken: token };
+  return createRoom(username, options);
 }
 
-export function quickJoin(username) {
-  const waiting = Array.from(rooms.values()).find(
-    (r) => r.game.status === "waiting" && r.players.length < ROOM_CAPACITY
-  );
-  if (waiting) return joinRoom(waiting.code, username);
-  return createRoom(username);
-}
+// `token` is optional but should always be passed when the caller has it
+// (server.js does, from the request header) so it can be revoked
+// directly. leaveRoom isn't racy the way joinRoom is — at most 2 players
+// can ever leave a room, and a rare concurrent double "leave" click just
+// makes the second call a no-op, not a fairness bug — so this is a plain
+// read-then-write rather than store.withRoom().
+export async function leaveRoom(code, playerId, token) {
+  const store = await getStore();
+  if (token) await store.deleteToken(token);
 
-export function leaveRoom(code, playerId) {
-  const room = rooms.get((code || "").toUpperCase());
+  const normalizedCode = (code || "").toUpperCase();
+  const room = await store.getRoom(normalizedCode);
   if (!room) return;
-  room.players = room.players.filter((p) => p.id !== playerId);
-  for (const [token, ref] of tokenIndex) {
-    if (ref.code === room.code && ref.playerId === playerId) tokenIndex.delete(token);
-  }
-  if (room.players.length === 0) {
-    rooms.delete(room.code);
+
+  const remaining = players(room).filter((p) => p.id !== playerId);
+
+  if (remaining.length === 0) {
+    await store.deleteRoom(normalizedCode);
     return;
   }
-  // Opponent left mid-game: end the game rather than leave it stuck.
+
+  if (room.game.status === "waiting") {
+    room.game.players = remaining;
+    await store.saveRoom(room);
+    return;
+  }
+
   if (room.game.status === "active") {
-    const remaining = room.players[0];
+    const winner = remaining[0];
     room.game.status = "finished";
-    room.game.winnerId = remaining.id;
-    room.game.message = `${remaining.username} wins (opponent left)`;
+    room.game.winnerId = winner.id;
+    room.game.message = `${winner.username} wins (opponent left)`;
     room.game.updatedAt = new Date().toISOString();
     room.game.revision = (room.game.revision || 0) + 1;
+    await store.saveRoom(room);
   }
-  touch(room);
 }
 
-export function getRoom(code) {
-  const room = rooms.get((code || "").toUpperCase());
+export async function getRoom(code) {
+  const store = await getStore();
+  const room = await store.getRoom((code || "").toUpperCase());
   if (!room) throw new Error("ROOM_NOT_FOUND");
   return room;
 }
 
-export function setGame(room, game) {
+export async function setGame(room, game) {
+  const store = await getStore();
   room.game = game;
-  touch(room);
+  await store.saveRoom(room);
 }
