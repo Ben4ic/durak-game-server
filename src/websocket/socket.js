@@ -22,19 +22,20 @@ export function attachSocket(socket, { resolveToken }) {
     }
 
     if (msg.type === "SUBSCRIBE") {
-      const resolved = resolveToken(msg.token);
-      if (!resolved) {
-        socket.send(JSON.stringify({ type: "ERROR", error: "INVALID_TOKEN" }));
-        return;
-      }
-      sub = { code: resolved.room.code, playerId: resolved.playerId };
-      if (!socketsByRoom.has(sub.code)) socketsByRoom.set(sub.code, new Set());
-      const entry = { socket, playerId: sub.playerId };
-      socketsByRoom.get(sub.code).add(entry);
-      sendState(resolved.room, sub.playerId, socket);
+      resolveToken(msg.token).then((resolved) => {
+        if (!resolved) {
+          socket.send(JSON.stringify({ type: "ERROR", error: "INVALID_TOKEN" }));
+          return;
+        }
+        sub = { code: resolved.room.code, playerId: resolved.playerId };
+        if (!socketsByRoom.has(sub.code)) socketsByRoom.set(sub.code, new Set());
+        const entry = { socket, playerId: sub.playerId };
+        socketsByRoom.get(sub.code).add(entry);
+        sendState(resolved.room, sub.playerId, socket);
 
-      socket.on("close", () => {
-        socketsByRoom.get(sub.code)?.delete(entry);
+        socket.on("close", () => {
+          socketsByRoom.get(sub.code)?.delete(entry);
+        });
       });
     }
   });
