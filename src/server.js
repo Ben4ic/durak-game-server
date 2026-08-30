@@ -22,6 +22,27 @@ const app = express();
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
+// Log every request + its outcome. This used to be missing entirely for
+// some routes, which is exactly how a silent failure (e.g. an empty {}
+// response instead of a real error) became invisible in the logs.
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on("finish", () => {
+    console.log(`${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - start}ms)`);
+  });
+  next();
+});
+
+// Safety net: if anything anywhere throws outside of a route's own
+// try/catch, log it loudly instead of letting it fail silently or crash
+// the whole process.
+process.on("unhandledRejection", (err) => {
+  console.error("[unhandledRejection]", err);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[uncaughtException]", err);
+});
+
 // ================= HEALTH / AUTH =================
 
 app.get("/", (req, res) => {
@@ -102,6 +123,7 @@ const ERROR_STATUS = {
 };
 
 function sendError(res, err) {
+  console.error("[error]", err);
   const status = ERROR_STATUS[err.message] || 400;
   res.status(status).json({ error: err.message });
 }
@@ -109,7 +131,11 @@ function sendError(res, err) {
 // ================= LOBBY =================
 
 app.get("/api/online/public", async (req, res) => {
-  res.json(await listPublicRooms());
+  try {
+    res.json(await listPublicRooms());
+  } catch (e) {
+    sendError(res, e);
+  }
 });
 
 app.post("/api/online/create", async (req, res) => {
@@ -148,18 +174,26 @@ app.post("/api/online/quick", async (req, res) => {
 app.post("/api/online/rejoin", async (req, res) => {
   const resolved = await requireAuth(req, res);
   if (!resolved) return;
-  res.json(roomOrGameView(resolved.room, resolved.playerId));
+  try {
+    res.json(roomOrGameView(resolved.room, resolved.playerId));
+  } catch (e) {
+    sendError(res, e);
+  }
 });
 
 app.post("/api/online/leave", async (req, res) => {
-  const token = req.headers["x-player-token"];
-  const resolved = await resolveToken(token);
-  if (resolved) {
-    await leaveRoom(resolved.room.code, resolved.playerId, token);
-    const stillThere = await getRoomSafe(resolved.room.code);
-    if (stillThere) broadcastRoom(stillThere);
+  try {
+    const token = req.headers["x-player-token"];
+    const resolved = await resolveToken(token);
+    if (resolved) {
+      await leaveRoom(resolved.room.code, resolved.playerId, token);
+      const stillThere = await getRoomSafe(resolved.room.code);
+      if (stillThere) broadcastRoom(stillThere);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    sendError(res, e);
   }
-  res.json({ ok: true });
 });
 
 // ================= ROOM STATE (polled every ~500ms by the client) =================
@@ -192,6 +226,15 @@ app.post("/api/online/action", async (req, res) => {
 });
 
 // ================= SERVER + WS (instant push, polling still works as fallback) =================
+
+// Belt-and-suspenders: catches anything that somehow still slips past every
+// route's own try/catch, so the client always gets JSON back instead of a
+// mysterious empty body or a raw HTML error page.
+app.use((err, req, res, next) => {
+  console.error("[unhandled route error]", err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ error: "INTERNAL_ERROR" });
+});
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server });
